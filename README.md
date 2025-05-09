@@ -1,4 +1,4 @@
-# 🎈 Blank app template
+# 🎈 brandazine-meeting-notetaker
 
 A simple Streamlit app template for you to modify!
 
