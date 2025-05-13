@@ -6,7 +6,7 @@ from datetime import datetime
 import re
 import base64
 import json
-from google.cloud import speech
+from google.cloud import speech_v1 as speech
 from google.oauth2 import service_account
 
 # 페이지 설정
@@ -28,7 +28,7 @@ if "summary_result" not in st.session_state:
     st.session_state["summary_result"] = None
 
 # 탭 생성
-tab1, tab2, tab3 = st.tabs(["실시간 녹음", "파일 업로드", "텍스트 직접 입력"])
+tab1, tab2, tab3 = st.tabs(["텍스트 직접 입력", "파일 업로드", "실시간 녹음"])
 
 # Claude API 키 입력 및 Google Cloud 인증 정보
 with st.sidebar:
@@ -144,9 +144,99 @@ def get_copy_button_html():
     </script>
     """
 
-# 실시간 녹음을 위한 JavaScript 코드
-def get_audio_recorder_html():
-    return """
+# 텍스트 직접 입력 탭 (첫 번째 탭으로 이동)
+with tab1:
+    st.header("텍스트 직접 입력")
+    st.markdown("미팅 내용을 직접 입력하거나 붙여넣기하세요. 그 후 '텍스트 저장 및 요약' 버튼을 클릭하세요.")
+    
+    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
+    
+    if st.button("텍스트 저장 및 요약", key="save_direct_text"):
+        if transcript_text:
+            st.session_state["transcript_text"] = transcript_text
+            st.success("텍스트가 저장되었습니다.")
+            
+            # 텍스트 표시
+            st.subheader("입력된 텍스트")
+            st.text_area("저장된 텍스트", transcript_text, height=200, key="display_saved_text")
+            
+            # Claude 요약 버튼
+            if claude_api_key:
+                with st.spinner("Claude API로 요약 생성 중..."):
+                    # 브랜드명 추출
+                    extracted_brand_name = extract_brand_name(transcript_text)
+                    final_brand_name = brand_name or extracted_brand_name
+                    
+                    # 미팅 정보 구성
+                    meeting_info = {
+                        "company_name": our_company_name,
+                        "our_participants": our_participants,
+                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
+                        "brand_name": final_brand_name
+                    }
+                    
+                    # 요약 생성
+                    summary = summarize_with_claude(transcript_text, claude_api_key, meeting_info)
+                    
+                    # 요약 결과 저장 및 표시
+                    st.session_state["summary_result"] = summary
+                    display_summary(summary, final_brand_name)
+            else:
+                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
+        else:
+            st.error("텍스트를 입력해주세요.")
+
+# 파일 업로드 탭
+with tab2:
+    st.header("파일 업로드")
+    st.markdown("텍스트 파일(.txt)을 업로드하세요.")
+    
+    uploaded_file = st.file_uploader("텍스트 파일(.txt) 선택", type=["txt"])
+    
+    if uploaded_file is not None:
+        # 텍스트 파일 처리
+        st.success(f"텍스트 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
+        
+        # 파일 내용 읽기
+        text_content = uploaded_file.read().decode('utf-8')
+        
+        # 텍스트 미리보기
+        st.subheader("파일 내용")
+        st.text_area("전체 텍스트", text_content, height=200, key="display_txt_content")
+        
+        # Claude 요약 버튼
+        if claude_api_key:
+            if st.button("Claude 요약 시작", key="summarize_from_txt"):
+                with st.spinner("Claude API로 요약 생성 중..."):
+                    # 브랜드명 추출
+                    extracted_brand_name = extract_brand_name(text_content)
+                    final_brand_name = brand_name or extracted_brand_name
+                    
+                    # 미팅 정보 구성
+                    meeting_info = {
+                        "company_name": our_company_name,
+                        "our_participants": our_participants,
+                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
+                        "brand_name": final_brand_name
+                    }
+                    
+                    # 요약 생성
+                    summary = summarize_with_claude(text_content, claude_api_key, meeting_info)
+                    
+                    # 요약 결과 저장 및 표시
+                    st.session_state["summary_result"] = summary
+                    display_summary(summary, final_brand_name)
+        else:
+            st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
+
+# 실시간 녹음 탭 (옵션으로 남겨둠)
+with tab3:
+    st.header("실시간 녹음")
+    st.markdown("이 기능은 현재 베타 테스트 중입니다. 가장 안정적인 방법은 녹음 후 텍스트를 직접 입력하는 것입니다.")
+    st.warning("현재 Google Cloud Speech API의 인코딩 문제로 인해 음성 인식 기능이 일시적으로 비활성화되었습니다.")
+    
+    # 오디오 레코더 HTML 삽입
+    st.components.v1.html("""
     <style>
     .button {
         background-color: #4CAF50;
@@ -274,24 +364,9 @@ def get_audio_recorder_html():
                         downloadLink.className = 'download-link';
                         downloadContainer.appendChild(downloadLink);
                         
-                        // Base64 인코딩하여 Streamlit에 전달
-                        const reader = new FileReader();
-                        reader.readAsDataURL(audioBlob);
-                        reader.onloadend = () => {
-                            const base64data = reader.result.split(',')[1];
-                            // Streamlit과 커뮤니케이션
-                            window.parent.postMessage({
-                                type: "streamlit:setComponentValue",
-                                value: {
-                                    audio_data: base64data,
-                                    audio_format: 'webm'
-                                }
-                            }, "*");
-                        };
-                        
                         // 상태 메시지 업데이트
                         statusMessage.className = "status-message success";
-                        statusMessage.textContent = "녹음이 완료되었습니다! '텍스트 변환 시작' 버튼을 클릭하세요.";
+                        statusMessage.textContent = "녹음이 완료되었습니다! 녹음 파일을 다운로드하고 녹음 내용을 '텍스트 직접 입력' 탭에 입력해주세요.";
                         
                         // 오디오 트랙 중지
                         stream.getTracks().forEach(track => track.stop());
@@ -314,277 +389,7 @@ def get_audio_recorder_html():
             }
         });
     </script>
-    """
-
-# Google Cloud Speech-to-Text 함수
-def transcribe_audio_google(audio_file_path):
-    """Google Cloud Speech-to-Text API를 사용하여 오디오 파일을 텍스트로 변환합니다."""
-    
-    if "google_creds_path" not in st.session_state:
-        st.error("Google Cloud 인증 정보가 설정되지 않았습니다.")
-        return None
-    
-    try:
-        # 인증 설정
-        credentials = service_account.Credentials.from_service_account_file(
-            st.session_state["google_creds_path"]
-        )
-        
-        # 클라이언트 초기화
-        client = speech.SpeechClient(credentials=credentials)
-        
-        # 오디오 파일 읽기
-        with open(audio_file_path, "rb") as audio_file:
-            content = audio_file.read()
-        
-        # 오디오 형식에 따라 설정
-        if audio_file_path.endswith('.wav'):
-            audio = speech.RecognitionAudio(content=content)
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=16000,
-                language_code="ko-KR",
-                enable_automatic_punctuation=True,
-                model="default"
-            )
-        else:  # MP3, WEBM 등 다른 형식
-            audio = speech.RecognitionAudio(content=content)
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
-                language_code="ko-KR",
-                enable_automatic_punctuation=True,
-                model="default"
-            )
-        
-        # 긴 오디오 파일 처리
-        operation = client.long_running_recognize(config=config, audio=audio)
-        st.info("Google Cloud Speech-to-Text API로 오디오를 처리 중입니다. 잠시 기다려주세요...")
-        response = operation.result(timeout=90)  # 최대 90초 대기
-        
-        # 결과 처리
-        transcript = ""
-        for result in response.results:
-            transcript += result.alternatives[0].transcript + " "
-        
-        return transcript.strip()
-    
-    except Exception as e:
-        st.error(f"텍스트 변환 중 오류 발생: {str(e)}")
-        import traceback
-        st.error(f"상세 오류: {traceback.format_exc()}")
-        return None
-
-# 실시간 녹음 탭
-with tab1:
-    st.header("실시간 녹음")
-    st.markdown("아래 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요. 녹음이 완료되면 '텍스트 변환 시작' 버튼을 클릭하세요.")
-    
-    # Google Cloud 인증 확인
-    if "google_creds_path" not in st.session_state:
-        st.warning("Google Cloud 인증 정보를 사이드바에 입력해주세요.")
-    
-    # 오디오 레코더 HTML 삽입
-    audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=300)
-    
-    # 녹음 데이터 처리
-    if audio_receiver and isinstance(audio_receiver, dict) and "audio_data" in audio_receiver:
-        st.session_state["audio_data"] = audio_receiver["audio_data"]
-        st.session_state["audio_format"] = audio_receiver.get("audio_format", "webm")
-    
-    # 텍스트 변환 버튼
-    if "audio_data" in st.session_state and st.session_state["audio_data"]:
-        if st.button("텍스트 변환 시작", key="transcribe_recorded_audio"):
-            # Base64 오디오 데이터를 파일로 저장
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{st.session_state['audio_format']}") as temp_file:
-                decoded_data = base64.b64decode(st.session_state["audio_data"])
-                temp_file.write(decoded_data)
-                temp_file_path = temp_file.name
-            
-            # Google Cloud Speech-to-Text로 변환
-            if "google_creds_path" in st.session_state:
-                with st.spinner("Google Cloud Speech-to-Text로 텍스트 변환 중..."):
-                    transcript = transcribe_audio_google(temp_file_path)
-                    
-                    if transcript:
-                        st.session_state["transcript_text"] = transcript
-                        st.success("텍스트 변환이 완료되었습니다!")
-                        
-                        # 텍스트 표시
-                        st.subheader("변환된 텍스트")
-                        st.text_area("전체 텍스트", transcript, height=200, key="display_transcript_recorded")
-                        
-                        # Claude 요약 버튼
-                        if claude_api_key:
-                            if st.button("Claude 요약 시작", key="summarize_recorded_audio"):
-                                with st.spinner("Claude API로 요약 생성 중..."):
-                                    # 브랜드명 추출
-                                    extracted_brand_name = extract_brand_name(transcript)
-                                    final_brand_name = brand_name or extracted_brand_name
-                                    
-                                    # 미팅 정보 구성
-                                    meeting_info = {
-                                        "company_name": our_company_name,
-                                        "our_participants": our_participants,
-                                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-                                        "brand_name": final_brand_name
-                                    }
-                                    
-                                    # 요약 생성
-                                    summary = summarize_with_claude(transcript, claude_api_key, meeting_info)
-                                    
-                                    # 요약 결과 저장 및 표시
-                                    st.session_state["summary_result"] = summary
-                                    display_summary(summary, final_brand_name)
-                        else:
-                            st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-                    else:
-                        st.error("텍스트 변환에 실패했습니다.")
-            else:
-                st.error("Google Cloud 인증 정보를 먼저 설정해주세요.")
-
-# 파일 업로드 탭
-with tab2:
-    st.header("파일 업로드")
-    st.markdown("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.")
-    
-    # Google Cloud 인증 확인
-    if "google_creds_path" not in st.session_state:
-        st.warning("Google Cloud 인증 정보를 사이드바에 입력해주세요.")
-    
-    uploaded_file = st.file_uploader("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt) 선택", 
-                                     type=["mp3", "wav", "m4a", "webm", "txt"])
-    
-    if uploaded_file is not None:
-        file_extension = uploaded_file.name.split('.')[-1].lower()
-        
-        if file_extension in ['mp3', 'wav', 'm4a', 'webm']:
-            # 오디오 파일 처리
-            st.success(f"오디오 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
-            
-            # 임시 파일로 저장
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-                temp_file.write(uploaded_file.getbuffer())
-                temp_file_path = temp_file.name
-            
-            # 텍스트 변환 버튼
-            if st.button("텍스트 변환 시작", key="transcribe_uploaded_audio"):
-                # Google Cloud Speech-to-Text로 변환
-                if "google_creds_path" in st.session_state:
-                    with st.spinner("Google Cloud Speech-to-Text로 텍스트 변환 중..."):
-                        transcript = transcribe_audio_google(temp_file_path)
-                        
-                        if transcript:
-                            st.session_state["transcript_text"] = transcript
-                            st.success("텍스트 변환이 완료되었습니다!")
-                            
-                            # 텍스트 표시
-                            st.subheader("변환된 텍스트")
-                            st.text_area("전체 텍스트", transcript, height=200, key="display_transcript_uploaded")
-                            
-                            # Claude 요약 버튼
-                            if claude_api_key:
-                                if st.button("Claude 요약 시작", key="summarize_uploaded_audio"):
-                                    with st.spinner("Claude API로 요약 생성 중..."):
-                                        # 브랜드명 추출
-                                        extracted_brand_name = extract_brand_name(transcript)
-                                        final_brand_name = brand_name or extracted_brand_name
-                                        
-                                        # 미팅 정보 구성
-                                        meeting_info = {
-                                            "company_name": our_company_name,
-                                            "our_participants": our_participants,
-                                            "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-                                            "brand_name": final_brand_name
-                                        }
-                                        
-                                        # 요약 생성
-                                        summary = summarize_with_claude(transcript, claude_api_key, meeting_info)
-                                        
-                                        # 요약 결과 저장 및 표시
-                                        st.session_state["summary_result"] = summary
-                                        display_summary(summary, final_brand_name)
-                            else:
-                                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-                        else:
-                            st.error("텍스트 변환에 실패했습니다.")
-                else:
-                    st.error("Google Cloud 인증 정보를 먼저 설정해주세요.")
-        
-        elif file_extension == 'txt':
-            # 텍스트 파일 처리
-            st.success(f"텍스트 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
-            
-            # 파일 내용 읽기
-            text_content = uploaded_file.read().decode('utf-8')
-            
-            # 텍스트 미리보기
-            st.subheader("파일 내용")
-            st.text_area("전체 텍스트", text_content, height=200, key="display_txt_content")
-            
-            # Claude 요약 버튼
-            if claude_api_key:
-                if st.button("Claude 요약 시작", key="summarize_from_txt"):
-                    with st.spinner("Claude API로 요약 생성 중..."):
-                        # 브랜드명 추출
-                        extracted_brand_name = extract_brand_name(text_content)
-                        final_brand_name = brand_name or extracted_brand_name
-                        
-                        # 미팅 정보 구성
-                        meeting_info = {
-                            "company_name": our_company_name,
-                            "our_participants": our_participants,
-                            "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-                            "brand_name": final_brand_name
-                        }
-                        
-                        # 요약 생성
-                        summary = summarize_with_claude(text_content, claude_api_key, meeting_info)
-                        
-                        # 요약 결과 저장 및 표시
-                        st.session_state["summary_result"] = summary
-                        display_summary(summary, final_brand_name)
-            else:
-                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-
-# 텍스트 직접 입력 탭
-with tab3:
-    st.header("텍스트 직접 입력")
-    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
-    
-    if st.button("텍스트 저장 및 요약", key="save_direct_text"):
-        if transcript_text:
-            st.session_state["transcript_text"] = transcript_text
-            st.success("텍스트가 저장되었습니다.")
-            
-            # 텍스트 표시
-            st.subheader("입력된 텍스트")
-            st.text_area("저장된 텍스트", transcript_text, height=200, key="display_saved_text")
-            
-            # Claude 요약 버튼
-            if claude_api_key:
-                with st.spinner("Claude API로 요약 생성 중..."):
-                    # 브랜드명 추출
-                    extracted_brand_name = extract_brand_name(transcript_text)
-                    final_brand_name = brand_name or extracted_brand_name
-                    
-                    # 미팅 정보 구성
-                    meeting_info = {
-                        "company_name": our_company_name,
-                        "our_participants": our_participants,
-                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-                        "brand_name": final_brand_name
-                    }
-                    
-                    # 요약 생성
-                    summary = summarize_with_claude(transcript_text, claude_api_key, meeting_info)
-                    
-                    # 요약 결과 저장 및 표시
-                    st.session_state["summary_result"] = summary
-                    display_summary(summary, final_brand_name)
-            else:
-                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-        else:
-            st.error("텍스트를 입력해주세요.")
+    """, height=300)
 
 # 요약 함수 (Claude API 사용)
 def summarize_with_claude(transcript, api_key, meeting_info):
