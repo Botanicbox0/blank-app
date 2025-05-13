@@ -1,28 +1,11 @@
 import streamlit as st
-import whisper
 import tempfile
 import os
-import json
 import requests
-import numpy as np
 from datetime import datetime
-import time
 import re
-from io import BytesIO
 import base64
 import subprocess
-import shutil
-
-# FFmpeg가 있는지 확인하는 함수
-def check_ffmpeg():
-    try:
-        # FFmpeg 버전 확인 (설치 확인용)
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
-        st.success("FFmpeg가 정상적으로 설치되어 있습니다.")
-        return True
-    except (subprocess.SubprocessError, FileNotFoundError):
-        st.error("FFmpeg를 찾을 수 없습니다. packages.txt 파일을 확인해주세요.")
-        return False
 
 # 페이지 설정
 st.set_page_config(page_title="브랜드 세일즈 미팅록 자동화", page_icon="🎙️", layout="wide")
@@ -36,18 +19,25 @@ st.markdown("""
 3. 변환된 텍스트를 이용해 Claude를 통해 구조화된 브랜드 미팅 요약을 생성할 수 있습니다.
 """)
 
+# FFmpeg가 있는지 확인하는 함수
+def check_ffmpeg():
+    try:
+        # FFmpeg 버전 확인 (설치 확인용)
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        st.success("FFmpeg가 정상적으로 설치되어 있습니다.")
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        st.error("FFmpeg를 찾을 수 없습니다. packages.txt 파일을 확인해주세요.")
+        return False
+
 # FFmpeg 확인
 ffmpeg_available = check_ffmpeg()
 
 # 세션 상태 초기화
-if "audio_data" not in st.session_state:
-    st.session_state["audio_data"] = None
 if "transcript_text" not in st.session_state:
     st.session_state["transcript_text"] = None
 if "summary_result" not in st.session_state:
     st.session_state["summary_result"] = None
-if "recorder_status" not in st.session_state:
-    st.session_state["recorder_status"] = "idle"  # 상태: idle, transcribed
 
 # 탭 생성
 tab1, tab2, tab3 = st.tabs(["실시간 녹음", "파일 업로드", "텍스트 직접 입력"])
@@ -57,23 +47,11 @@ with st.sidebar:
     st.header("설정")
     claude_api_key = st.text_input("Claude API 키", type="password")
     st.markdown("---")
-    st.subheader("Whisper 모델 (음성 변환용)")
-    model_size = st.selectbox("모델 크기", ["tiny", "base", "small", "medium", "large"], index=1)
-    st.markdown("---")
     st.subheader("브랜드 미팅 정보")
     our_company_name = st.text_input("자사명", value="브랜더진")
     our_participants = st.text_input("자사 참석자 (쉼표로 구분)")
     meeting_date = st.date_input("미팅 날짜", datetime.now())
     brand_name = st.text_input("브랜드명 (자동 추출되지 않을 경우 사용)")
-
-# Whisper 모델 로드
-@st.cache_resource
-def load_whisper_model(model_size):
-    try:
-        return whisper.load_model(model_size)
-    except Exception as e:
-        st.error(f"모델 로드 실패: {e}")
-        return None
 
 # 브랜드 이름 추출 함수
 def extract_brand_name(text):
@@ -91,35 +69,6 @@ def extract_brand_name(text):
             return max(matches, key=len).strip()
     
     return "미확인 브랜드"
-
-# WAV를 MP3로 변환하는 함수 (FFmpeg 사용)
-def convert_audio_format(input_file, output_format="mp3"):
-    if not ffmpeg_available:
-        st.warning("FFmpeg가 설치되어 있지 않아 변환을 건너뜁니다. 원본 파일을 사용합니다.")
-        return input_file
-    
-    try:
-        output_file = input_file.rsplit('.', 1)[0] + f".{output_format}"
-        
-        # FFmpeg 명령어 구성
-        cmd = [
-            'ffmpeg',
-            '-i', input_file,  # 입력 파일
-            '-y',  # 출력 파일 덮어쓰기
-            '-vn',  # 비디오 스트림 제거
-            '-ar', '44100',  # 샘플링 레이트
-            '-ac', '2',  # 오디오 채널 수
-            '-b:a', '192k',  # 비트레이트
-            output_file  # 출력 파일
-        ]
-        
-        # 명령어 실행
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        st.success(f"오디오 파일이 {output_format} 형식으로 변환되었습니다.")
-        return output_file
-    except Exception as e:
-        st.error(f"오디오 변환 중 오류 발생: {str(e)}")
-        return input_file
 
 # 복사 버튼을 위한 JavaScript 함수
 def get_copy_button_html():
@@ -336,9 +285,6 @@ def get_audio_recorder_html():
     </script>
     """
 
-# 결과 표시를 위한 컨테이너
-result_container = st.container()
-
 # 실시간 녹음 탭
 with tab1:
     st.header("실시간 녹음")
@@ -356,8 +302,7 @@ with tab2:
     st.header("파일 업로드")
     st.markdown("""
     오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.
-    업로드 후 '텍스트 변환 시작' 버튼을 클릭하면 변환이 시작됩니다.
-    텍스트로 변환된 후에는 'Claude 요약 시작' 버튼이 나타납니다.
+    텍스트 파일은 바로 요약이 가능하며, 오디오 파일은 먼저 텍스트 변환 후 요약할 수 있습니다.
     """)
     
     uploaded_file = st.file_uploader("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt) 선택", 
@@ -370,22 +315,53 @@ with tab2:
             # 오디오 파일 처리
             st.success(f"오디오 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
             
-            # 임시 파일로 저장
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-                temp_file.write(uploaded_file.getbuffer())
-                temp_filename = temp_file.name
+            # 오디오 파일은 텍스트를 직접 입력하도록 안내
+            st.warning("현재 자동 텍스트 변환 기능이 오류로 인해 비활성화되었습니다. 녹음 내용을 '텍스트 직접 입력' 탭에서 직접 입력해주세요.")
             
-            # MP3로 변환
-            if ffmpeg_available and file_extension != 'mp3':
-                with st.spinner(f"{file_extension} 파일을 MP3로 변환 중..."):
-                    mp3_filename = convert_audio_format(temp_filename, "mp3")
-                    st.session_state["audio_file"] = mp3_filename
-            else:
-                st.session_state["audio_file"] = temp_filename
-            
-            # 텍스트 변환 버튼
-            if st.button("텍스트 변환 시작", key="convert_audio"):
-                process_audio_to_text()
+            # Whisper로 변환을 시도하고 싶은 경우 확장
+            with st.expander("오디오 변환 시도하기 (실험적 기능)", expanded=False):
+                st.markdown("""
+                이 기능은 실험적이며 오류가 발생할 수 있습니다. 오류 발생 시 텍스트 직접 입력 탭을 사용해주세요.
+                """)
+                
+                # 텍스트 입력 영역
+                transcript_from_audio = st.text_area("오디오를 직접 들으시고 텍스트를 입력해주세요:", height=300)
+                
+                if st.button("텍스트 저장 및 요약"):
+                    if transcript_from_audio:
+                        st.session_state["transcript_text"] = transcript_from_audio
+                        st.success("텍스트가 저장되었습니다.")
+                        
+                        # 텍스트 표시
+                        st.subheader("입력된 텍스트")
+                        st.text_area("전체 텍스트", transcript_from_audio, height=200)
+                        
+                        # Claude 요약 버튼
+                        if claude_api_key:
+                            if st.button("Claude 요약 시작", key="summarize_from_audio"):
+                                with st.spinner("Claude API로 요약 생성 중..."):
+                                    # 브랜드명 추출
+                                    extracted_brand_name = extract_brand_name(transcript_from_audio)
+                                    final_brand_name = brand_name or extracted_brand_name
+                                    
+                                    # 미팅 정보 구성
+                                    meeting_info = {
+                                        "company_name": our_company_name,
+                                        "our_participants": our_participants,
+                                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
+                                        "brand_name": final_brand_name
+                                    }
+                                    
+                                    # 요약 생성
+                                    summary = summarize_with_claude(transcript_from_audio, claude_api_key, meeting_info)
+                                    
+                                    # 요약 결과 저장 및 표시
+                                    st.session_state["summary_result"] = summary
+                                    display_summary(summary, final_brand_name)
+                        else:
+                            st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
+                    else:
+                        st.error("텍스트를 입력해주세요.")
         
         elif file_extension == 'txt':
             # 텍스트 파일 처리
@@ -393,151 +369,75 @@ with tab2:
             
             # 파일 내용 읽기
             text_content = uploaded_file.read().decode('utf-8')
-            st.session_state["transcript_text"] = text_content
-            st.session_state["recorder_status"] = "transcribed"
             
             # 텍스트 미리보기
-            with st.expander("텍스트 미리보기"):
-                st.text(text_content[:1000] + ("..." if len(text_content) > 1000 else ""))
+            st.subheader("파일 내용")
+            st.text_area("전체 텍스트", text_content, height=200)
             
-            # 텍스트 표시
-            display_transcript()
+            # Claude 요약 버튼
+            if claude_api_key:
+                if st.button("Claude 요약 시작", key="summarize_from_txt"):
+                    with st.spinner("Claude API로 요약 생성 중..."):
+                        # 브랜드명 추출
+                        extracted_brand_name = extract_brand_name(text_content)
+                        final_brand_name = brand_name or extracted_brand_name
+                        
+                        # 미팅 정보 구성
+                        meeting_info = {
+                            "company_name": our_company_name,
+                            "our_participants": our_participants,
+                            "meeting_date": meeting_date.strftime("%Y-%m-%d"),
+                            "brand_name": final_brand_name
+                        }
+                        
+                        # 요약 생성
+                        summary = summarize_with_claude(text_content, claude_api_key, meeting_info)
+                        
+                        # 요약 결과 저장 및 표시
+                        st.session_state["summary_result"] = summary
+                        display_summary(summary, final_brand_name)
+            else:
+                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
 
 # 텍스트 직접 입력 탭
 with tab3:
     st.header("텍스트 직접 입력")
     transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300)
-    if st.button("텍스트 저장"):
+    
+    if st.button("텍스트 저장 및 요약"):
         if transcript_text:
             st.session_state["transcript_text"] = transcript_text
-            st.session_state["recorder_status"] = "transcribed"
             st.success("텍스트가 저장되었습니다.")
-            display_transcript()
+            
+            # 텍스트 표시
+            st.subheader("입력된 텍스트")
+            st.text_area("저장된 텍스트", transcript_text, height=200)
+            
+            # Claude 요약 버튼
+            if claude_api_key:
+                with st.spinner("Claude API로 요약 생성 중..."):
+                    # 브랜드명 추출
+                    extracted_brand_name = extract_brand_name(transcript_text)
+                    final_brand_name = brand_name or extracted_brand_name
+                    
+                    # 미팅 정보 구성
+                    meeting_info = {
+                        "company_name": our_company_name,
+                        "our_participants": our_participants,
+                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
+                        "brand_name": final_brand_name
+                    }
+                    
+                    # 요약 생성
+                    summary = summarize_with_claude(transcript_text, claude_api_key, meeting_info)
+                    
+                    # 요약 결과 저장 및 표시
+                    st.session_state["summary_result"] = summary
+                    display_summary(summary, final_brand_name)
+            else:
+                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
         else:
             st.error("텍스트를 입력해주세요.")
-
-# 녹음 자동 처리 함수
-def process_recording_data(audio_data, audio_format="webm"):
-    if not audio_data:
-        return False
-    
-    try:
-        # Base64 데이터를 파일로 저장
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_format}") as temp_file:
-            decoded_data = base64.b64decode(audio_data)
-            temp_file.write(decoded_data)
-            temp_filename = temp_file.name
-        
-        st.session_state["audio_file"] = temp_filename
-        
-        # MP3로 변환 (FFmpeg 사용)
-        if ffmpeg_available and audio_format != 'mp3':
-            with st.spinner(f"{audio_format} 파일을 MP3로 변환 중..."):
-                mp3_filename = convert_audio_format(temp_filename, "mp3")
-                st.session_state["audio_file"] = mp3_filename
-        
-        return True
-    except Exception as e:
-        st.error(f"오디오 처리 중 오류 발생: {e}")
-        return False
-
-# 오디오를 텍스트로 변환하는 함수
-def process_audio_to_text():
-    if "audio_file" in st.session_state and st.session_state["audio_file"]:
-        # Whisper 모델 로드
-        model = load_whisper_model(model_size)
-        if not model:
-            st.error("Whisper 모델을 로드할 수 없습니다.")
-            st.session_state["recorder_status"] = "error"
-            return False
-        
-        # 오디오 파일에서 텍스트 변환
-        try:
-            with st.spinner("오디오를 텍스트로 변환 중..."):
-                # 오디오 파일 확인
-                audio_file = st.session_state["audio_file"]
-                
-                if not os.path.exists(audio_file):
-                    st.error(f"파일을 찾을 수 없습니다: {audio_file}")
-                    st.session_state["recorder_status"] = "error"
-                    return False
-                
-                # 파일 크기 확인
-                file_size = os.path.getsize(audio_file)
-                if file_size == 0:
-                    st.error("오디오 파일이 비어 있습니다.")
-                    st.session_state["recorder_status"] = "error"
-                    return False
-                
-                # 텍스트 변환
-                st.info(f"오디오 파일 '{audio_file}' 변환 중... (크기: {file_size}바이트)")
-                transcript = transcribe_audio(audio_file, model)
-                
-                if transcript:
-                    st.session_state["transcript_text"] = transcript
-                    st.session_state["recorder_status"] = "transcribed"
-                    display_transcript()
-                    return True
-                else:
-                    st.error("텍스트 변환에 실패했습니다.")
-                    st.session_state["recorder_status"] = "error"
-        except Exception as e:
-            st.error(f"텍스트 변환 처리 중 오류 발생: {e}")
-            import traceback
-            st.error(f"상세 오류: {traceback.format_exc()}")
-            st.session_state["recorder_status"] = "error"
-    
-    return False
-
-# 오디오 파일을 텍스트로 변환 (Whisper 사용)
-def transcribe_audio(audio_file, model):
-    try:
-        # 텍스트 변환
-        result = model.transcribe(audio_file, language="ko")
-        return result["text"]
-    except Exception as e:
-        st.error(f"텍스트 변환 중 오류 발생: {str(e)}")
-        import traceback
-        st.error(f"상세 오류: {traceback.format_exc()}")
-        return None
-
-# 요약 함수 (Claude API 사용)
-def summarize_text_with_claude():
-    if "transcript_text" not in st.session_state or not st.session_state["transcript_text"]:
-        st.error("요약할 텍스트가 없습니다.")
-        return False
-    
-    if not claude_api_key:
-        st.error("Claude API 키가 입력되지 않았습니다. 요약을 진행할 수 없습니다.")
-        return False
-    
-    transcript = st.session_state["transcript_text"]
-    
-    # 텍스트에서 브랜드명 추출
-    extracted_brand_name = extract_brand_name(transcript)
-    
-    # 사이드바에서 입력한 브랜드명이 있으면 그것을 우선 사용
-    final_brand_name = brand_name or extracted_brand_name
-    
-    # 미팅 정보 구성
-    meeting_info = {
-        "company_name": our_company_name,
-        "our_participants": our_participants,
-        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-        "brand_name": final_brand_name
-    }
-    
-    # 요약 생성
-    with st.spinner("Claude API로 요약 생성 중..."):
-        summary = summarize_with_claude(transcript, claude_api_key, meeting_info)
-    
-    if summary:
-        # 요약 결과 저장
-        st.session_state["summary_result"] = summary
-        display_summary()
-        return True
-    
-    return False
 
 # 요약 함수 (Claude API 사용)
 def summarize_with_claude(transcript, api_key, meeting_info):
@@ -604,91 +504,29 @@ def summarize_with_claude(transcript, api_key, meeting_info):
     except Exception as e:
         return f"요약 생성 중 오류 발생: {str(e)}"
 
-# 텍스트 변환 후 표시 함수
-def display_transcript():
-    if "transcript_text" in st.session_state and st.session_state["transcript_text"]:
-        transcript = st.session_state["transcript_text"]
-        
-        # 텍스트 표시 영역
-        transcript_container = st.container()
-        with transcript_container:
-            st.subheader("변환된 텍스트")
-            st.text_area("전체 텍스트", transcript, height=200)
-            
-            # Claude API 키가 있으면 요약 버튼 표시
-            if claude_api_key:
-                if st.button("Claude 요약 시작", key="summary_button"):
-                    summarize_text_with_claude()
-            else:
-                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-        
-        return True
-    
-    return False
-
 # 요약 결과 표시 함수
-def display_summary():
-    if "summary_result" in st.session_state and st.session_state["summary_result"]:
-        summary = st.session_state["summary_result"]
-        
-        # 브랜드명 추출 (파일명용)
-        final_brand_name = brand_name
-        if not final_brand_name and "transcript_text" in st.session_state:
-            final_brand_name = extract_brand_name(st.session_state["transcript_text"])
-        
-        summary_container = st.container()
-        with summary_container:
-            st.subheader("브랜드 세일즈 미팅 요약")
-            
-            # 1. 마크다운으로 표시
-            st.markdown(summary)
-            
-            # 2. 복사 가능한 영역과 복사 버튼 추가
-            st.components.v1.html(get_copy_button_html() % summary, height=500)
-            
-            # 3. 다운로드 버튼
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label="요약본 다운로드 (.txt)",
-                    data=summary,
-                    file_name=f"브랜드미팅요약_{meeting_date.strftime('%Y%m%d')}_{final_brand_name}.txt",
-                    mime="text/plain"
-                )
-            with col2:
-                st.download_button(
-                    label="요약본 다운로드 (.md)",
-                    data=summary,
-                    file_name=f"브랜드미팅요약_{meeting_date.strftime('%Y%m%d')}_{final_brand_name}.md",
-                    mime="text/markdown"
-                )
-        
-        return True
+def display_summary(summary, brand_name_value):
+    st.subheader("브랜드 세일즈 미팅 요약")
     
-    return False
-
-# 디버깅 정보 표시 영역
-with st.expander("디버깅 정보", expanded=False):
-    st.write(f"FFmpeg 설치 상태: {'설치됨' if ffmpeg_available else '설치되지 않음'}")
+    # 1. 마크다운으로 표시
+    st.markdown(summary)
     
-    if "audio_file" in st.session_state:
-        st.write(f"오디오 파일 경로: {st.session_state['audio_file']}")
-        if os.path.exists(st.session_state["audio_file"]):
-            st.write(f"파일 크기: {os.path.getsize(st.session_state['audio_file'])} 바이트")
-        else:
-            st.write("파일이 존재하지 않습니다.")
+    # 2. 복사 가능한 영역과 복사 버튼 추가
+    st.components.v1.html(get_copy_button_html() % summary, height=500)
     
-    st.write(f"현재 상태: {st.session_state['recorder_status']}")
-    st.write(f"텍스트 변환 여부: {'있음' if 'transcript_text' in st.session_state and st.session_state['transcript_text'] else '없음'}")
-
-# 임시 파일 정리
-def cleanup_temp_files():
-    if "audio_file" in st.session_state and st.session_state["audio_file"]:
-        try:
-            os.remove(st.session_state["audio_file"])
-        except:
-            pass
-
-# 앱 종료 시 임시 파일 정리
-import atexit
-atexit.register(cleanup_temp_files)
+    # 3. 다운로드 버튼
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            label="요약본 다운로드 (.txt)",
+            data=summary,
+            file_name=f"브랜드미팅요약_{meeting_date.strftime('%Y%m%d')}_{brand_name_value}.txt",
+            mime="text/plain"
+        )
+    with col2:
+        st.download_button(
+            label="요약본 다운로드 (.md)",
+            data=summary,
+            file_name=f"브랜드미팅요약_{meeting_date.strftime('%Y%m%d')}_{brand_name_value}.md",
+            mime="text/markdown"
+        )
