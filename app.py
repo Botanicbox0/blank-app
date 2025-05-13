@@ -220,11 +220,24 @@ def get_audio_recorder_html():
         background-color: #ddffdd;
         border-left: 6px solid #4CAF50;
     }
+    .download-link {
+        display: inline-block;
+        margin: 10px 0;
+        padding: 10px 15px;
+        background-color: #4CAF50;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
     </style>
     <div id="audio-recorder">
         <button id="record-button" class="button">녹음 시작</button>
         <div id="time-display" class="time-display">00:00:00</div>
-        <audio id="audio-playback" controls style="display:none;"></audio>
+        <div id="audio-container">
+            <audio id="audio-playback" controls style="display:none;"></audio>
+            <div id="download-container"></div>
+        </div>
         <div id="status-message" class="status-message"></div>
     </div>
 
@@ -233,6 +246,7 @@ def get_audio_recorder_html():
         const timeDisplay = document.getElementById('time-display');
         const audioPlayback = document.getElementById('audio-playback');
         const statusMessage = document.getElementById('status-message');
+        const downloadContainer = document.getElementById('download-container');
         
         let mediaRecorder;
         let audioChunks = [];
@@ -281,25 +295,23 @@ def get_audio_recorder_html():
                         audioPlayback.src = audioUrl;
                         audioPlayback.style.display = 'block';
                         
-                        // Base64 인코딩하여 Streamlit에 전달
-                        const reader = new FileReader();
-                        reader.readAsDataURL(audioBlob);
-                        reader.onloadend = () => {
-                            const base64data = reader.result.split(',')[1];
-                            
-                            // Streamlit과 커뮤니케이션
-                            window.parent.postMessage({
-                                type: "streamlit:setComponentValue",
-                                value: {
-                                    audio_data: base64data,
-                                    audio_format: 'webm'
-                                }
-                            }, "*");
-                            
-                            // 상태 메시지 업데이트
-                            statusMessage.className = "status-message success";
-                            statusMessage.textContent = "녹음이 완료되었습니다! 텍스트 변환 중...";
-                        };
+                        // 다운로드 링크 생성
+                        // 이전 다운로드 링크 제거
+                        while (downloadContainer.firstChild) {
+                            downloadContainer.removeChild(downloadContainer.firstChild);
+                        }
+                        
+                        // 새로운 다운로드 링크 추가
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = audioUrl;
+                        downloadLink.download = `recording_${new Date().toISOString().replace(/[:.]/g, '-')}.mp3`;
+                        downloadLink.textContent = '녹음 파일 다운로드 (MP3)';
+                        downloadLink.className = 'download-link';
+                        downloadContainer.appendChild(downloadLink);
+                        
+                        // 상태 메시지 업데이트
+                        statusMessage.className = "status-message success";
+                        statusMessage.textContent = "녹음이 완료되었습니다! 파일을 다운로드하고 '파일 업로드' 탭에서 업로드해주세요.";
                         
                         // 오디오 트랙 중지
                         stream.getTracks().forEach(track => track.stop());
@@ -330,35 +342,14 @@ result_container = st.container()
 # 실시간 녹음 탭
 with tab1:
     st.header("실시간 녹음")
-    st.markdown("아래 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요. 녹음이 완료되면 텍스트 변환 과정이 자동으로 시작됩니다.")
+    st.markdown("아래 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요. 녹음이 완료되면 파일을 다운로드하고 '파일 업로드' 탭에서 업로드해주세요.")
     
     # API 키 확인 메시지
     if not claude_api_key:
         st.warning("요약 기능을 사용하려면 사이드바에 Claude API 키를 입력해주세요. API 키가 없어도 텍스트 변환은 가능합니다.")
     
     # 오디오 레코더 HTML 삽입
-    audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=250)
-    
-    # 녹음 처리 상태 표시 영역
-    recorder_status_container = st.empty()
-    
-    # 현재 상태에 따른 메시지 표시
-    if st.session_state["recorder_status"] == "processing":
-        recorder_status_container.info("녹음이 완료되었습니다! 텍스트 변환 중...")
-    elif st.session_state["recorder_status"] == "transcribed":
-        recorder_status_container.success("텍스트 변환 완료!")
-    
-    # JavaScript로부터 데이터 수신 처리
-    if audio_receiver and isinstance(audio_receiver, dict):
-        if "audio_data" in audio_receiver:
-            st.session_state["audio_data"] = audio_receiver["audio_data"]
-            st.session_state["audio_format"] = audio_receiver.get("audio_format", "webm")
-            st.session_state["recorder_status"] = "processing"
-            recorder_status_container.info("녹음이 완료되었습니다! 텍스트 변환 중...")
-            
-            # 오디오 데이터 처리
-            if process_recording_data(st.session_state["audio_data"], st.session_state["audio_format"]):
-                process_audio_to_text()
+    st.components.v1.html(get_audio_recorder_html(), height=300)
 
 # 파일 업로드 탭
 with tab2:
