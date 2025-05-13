@@ -1,13 +1,16 @@
 import streamlit as st
+import whisper
 import tempfile
 import os
-import requests
-from datetime import datetime
-import re
-import base64
 import json
-from google.cloud import speech_v1 as speech
-from google.oauth2 import service_account
+import requests
+import numpy as np
+from datetime import datetime
+import time
+import re
+from io import BytesIO
+import base64
+import subprocess
 
 # 페이지 설정
 st.set_page_config(page_title="브랜드 세일즈 미팅록 자동화", page_icon="🎙️", layout="wide")
@@ -15,59 +18,53 @@ st.set_page_config(page_title="브랜드 세일즈 미팅록 자동화", page_ic
 # 타이틀 및 설명
 st.title("🎙️ 브랜드 세일즈 미팅록 자동화")
 st.markdown("""
-이 앱은 브랜드 세일즈 미팅을 실시간으로 녹음하거나, 기존 녹음을 업로드하여 텍스트로 변환하고 요약합니다.
-1. 실시간 녹음을 시작하거나 기존 오디오 파일을 업로드하세요.
-2. Google Cloud Speech-to-Text API를 통해 텍스트로 변환됩니다.
-3. 변환된 텍스트를 이용해 Claude를 통해 구조화된 브랜드 미팅 요약을 생성할 수 있습니다.
+이 앱은 브랜드 세일즈 미팅을 실시간으로 녹음하거나 기존 녹음을 업로드하여 텍스트로 변환하고 요약합니다.
+1. 실시간 녹음을 시작하거나 기존 오디오/텍스트 파일을 업로드하세요.
+2. 녹음이 끝나면 자동으로 텍스트로 변환되고 요약을 생성합니다.
+3. 구조화된 브랜드 미팅 요약을 복사하거나 다운로드할 수 있습니다.
 """)
 
 # 세션 상태 초기화
+if "audio_data" not in st.session_state:
+    st.session_state["audio_data"] = None
+if "auto_process" not in st.session_state:
+    st.session_state["auto_process"] = False
+if "audio_file" not in st.session_state:
+    st.session_state["audio_file"] = None
 if "transcript_text" not in st.session_state:
     st.session_state["transcript_text"] = None
 if "summary_result" not in st.session_state:
     st.session_state["summary_result"] = None
+if "processed_data" not in st.session_state:
+    st.session_state["processed_data"] = None
+if "recorder_status" not in st.session_state:
+    st.session_state["recorder_status"] = "idle"  # 상태: idle, recording, processing, transcribed
 
 # 탭 생성
-tab1, tab2, tab3 = st.tabs(["텍스트 직접 입력", "파일 업로드", "실시간 녹음"])
+tab1, tab2, tab3 = st.tabs(["실시간 녹음", "파일 업로드", "텍스트 직접 입력"])
 
-# Claude API 키 입력 및 Google Cloud 인증 정보
+# Claude API 키 입력
 with st.sidebar:
     st.header("설정")
     claude_api_key = st.text_input("Claude API 키", type="password")
-    
     st.markdown("---")
-    st.subheader("Google Cloud 인증")
-    google_creds_json = st.text_area(
-        "Google Cloud 서비스 계정 키 (JSON)", 
-        height=100,
-        help="Google Cloud Console에서 다운로드한 서비스 계정 키 JSON 내용을 붙여넣으세요."
-    )
-    
-    # 또는 파일 업로드로 인증 정보 받기
-    uploaded_creds = st.file_uploader("또는 서비스 계정 키 파일 업로드", type=["json"])
-    
-    if uploaded_creds is not None:
-        google_creds_json = uploaded_creds.getvalue().decode("utf-8")
-    
-    # 인증 정보 검증
-    if google_creds_json:
-        try:
-            json.loads(google_creds_json)
-            st.success("Google Cloud 인증 정보가 유효합니다.")
-            # 임시 파일에 저장
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as temp_file:
-                temp_file.write(google_creds_json.encode('utf-8'))
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_file.name
-                st.session_state["google_creds_path"] = temp_file.name
-        except json.JSONDecodeError:
-            st.error("유효하지 않은 JSON 형식입니다. 올바른 서비스 계정 키를 입력하세요.")
-    
+    st.subheader("Whisper 모델 (음성 변환용)")
+    model_size = st.selectbox("모델 크기", ["tiny", "base", "small", "medium", "large"], index=1)
     st.markdown("---")
     st.subheader("브랜드 미팅 정보")
     our_company_name = st.text_input("자사명", value="브랜더진")
     our_participants = st.text_input("자사 참석자 (쉼표로 구분)")
     meeting_date = st.date_input("미팅 날짜", datetime.now())
     brand_name = st.text_input("브랜드명 (자동 추출되지 않을 경우 사용)")
+
+# Whisper 모델 로드
+@st.cache_resource
+def load_whisper_model(model_size):
+    try:
+        return whisper.load_model(model_size)
+    except Exception as e:
+        st.error(f"모델 로드 실패: {e}")
+        return None
 
 # 브랜드 이름 추출 함수
 def extract_brand_name(text):
@@ -144,99 +141,9 @@ def get_copy_button_html():
     </script>
     """
 
-# 텍스트 직접 입력 탭 (첫 번째 탭으로 이동)
-with tab1:
-    st.header("텍스트 직접 입력")
-    st.markdown("미팅 내용을 직접 입력하거나 붙여넣기하세요. 그 후 '텍스트 저장 및 요약' 버튼을 클릭하세요.")
-    
-    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
-    
-    if st.button("텍스트 저장 및 요약", key="save_direct_text"):
-        if transcript_text:
-            st.session_state["transcript_text"] = transcript_text
-            st.success("텍스트가 저장되었습니다.")
-            
-            # 텍스트 표시
-            st.subheader("입력된 텍스트")
-            st.text_area("저장된 텍스트", transcript_text, height=200, key="display_saved_text")
-            
-            # Claude 요약 버튼
-            if claude_api_key:
-                with st.spinner("Claude API로 요약 생성 중..."):
-                    # 브랜드명 추출
-                    extracted_brand_name = extract_brand_name(transcript_text)
-                    final_brand_name = brand_name or extracted_brand_name
-                    
-                    # 미팅 정보 구성
-                    meeting_info = {
-                        "company_name": our_company_name,
-                        "our_participants": our_participants,
-                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-                        "brand_name": final_brand_name
-                    }
-                    
-                    # 요약 생성
-                    summary = summarize_with_claude(transcript_text, claude_api_key, meeting_info)
-                    
-                    # 요약 결과 저장 및 표시
-                    st.session_state["summary_result"] = summary
-                    display_summary(summary, final_brand_name)
-            else:
-                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-        else:
-            st.error("텍스트를 입력해주세요.")
-
-# 파일 업로드 탭
-with tab2:
-    st.header("파일 업로드")
-    st.markdown("텍스트 파일(.txt)을 업로드하세요.")
-    
-    uploaded_file = st.file_uploader("텍스트 파일(.txt) 선택", type=["txt"])
-    
-    if uploaded_file is not None:
-        # 텍스트 파일 처리
-        st.success(f"텍스트 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
-        
-        # 파일 내용 읽기
-        text_content = uploaded_file.read().decode('utf-8')
-        
-        # 텍스트 미리보기
-        st.subheader("파일 내용")
-        st.text_area("전체 텍스트", text_content, height=200, key="display_txt_content")
-        
-        # Claude 요약 버튼
-        if claude_api_key:
-            if st.button("Claude 요약 시작", key="summarize_from_txt"):
-                with st.spinner("Claude API로 요약 생성 중..."):
-                    # 브랜드명 추출
-                    extracted_brand_name = extract_brand_name(text_content)
-                    final_brand_name = brand_name or extracted_brand_name
-                    
-                    # 미팅 정보 구성
-                    meeting_info = {
-                        "company_name": our_company_name,
-                        "our_participants": our_participants,
-                        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
-                        "brand_name": final_brand_name
-                    }
-                    
-                    # 요약 생성
-                    summary = summarize_with_claude(text_content, claude_api_key, meeting_info)
-                    
-                    # 요약 결과 저장 및 표시
-                    st.session_state["summary_result"] = summary
-                    display_summary(summary, final_brand_name)
-        else:
-            st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
-
-# 실시간 녹음 탭 (옵션으로 남겨둠)
-with tab3:
-    st.header("실시간 녹음")
-    st.markdown("이 기능은 현재 베타 테스트 중입니다. 가장 안정적인 방법은 녹음 후 텍스트를 직접 입력하는 것입니다.")
-    st.warning("현재 Google Cloud Speech API의 인코딩 문제로 인해 음성 인식 기능이 일시적으로 비활성화되었습니다.")
-    
-    # 오디오 레코더 HTML 삽입
-    st.components.v1.html("""
+# 실시간 녹음을 위한 JavaScript 코드
+def get_audio_recorder_html():
+    return """
     <style>
     .button {
         background-color: #4CAF50;
@@ -275,24 +182,11 @@ with tab3:
         background-color: #ddffdd;
         border-left: 6px solid #4CAF50;
     }
-    .download-link {
-        display: inline-block;
-        margin: 10px 0;
-        padding: 10px 15px;
-        background-color: #4CAF50;
-        color: white;
-        text-decoration: none;
-        border-radius: 4px;
-        cursor: pointer;
-    }
     </style>
     <div id="audio-recorder">
         <button id="record-button" class="button">녹음 시작</button>
         <div id="time-display" class="time-display">00:00:00</div>
-        <div id="audio-container">
-            <audio id="audio-playback" controls style="display:none;"></audio>
-            <div id="download-container"></div>
-        </div>
+        <audio id="audio-playback" controls style="display:none;"></audio>
         <div id="status-message" class="status-message"></div>
     </div>
 
@@ -301,7 +195,6 @@ with tab3:
         const timeDisplay = document.getElementById('time-display');
         const audioPlayback = document.getElementById('audio-playback');
         const statusMessage = document.getElementById('status-message');
-        const downloadContainer = document.getElementById('download-container');
         
         let mediaRecorder;
         let audioChunks = [];
@@ -336,8 +229,8 @@ with tab3:
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     
                     // 가능한 오디오 형식 확인
-                    const mimeType = 'audio/webm';
-                    mediaRecorder = new MediaRecorder(stream, { mimeType });
+                    const mimeType = 'audio/wav';
+                    mediaRecorder = new MediaRecorder(stream);
                     
                     mediaRecorder.ondataavailable = (event) => {
                         audioChunks.push(event.data);
@@ -345,28 +238,30 @@ with tab3:
                     
                     mediaRecorder.onstop = () => {
                         // 녹음된 오디오 처리
-                        audioBlob = new Blob(audioChunks, { type: mimeType });
+                        audioBlob = new Blob(audioChunks);
                         const audioUrl = URL.createObjectURL(audioBlob);
                         audioPlayback.src = audioUrl;
                         audioPlayback.style.display = 'block';
                         
-                        // 다운로드 링크 생성
-                        // 이전 다운로드 링크 제거
-                        while (downloadContainer.firstChild) {
-                            downloadContainer.removeChild(downloadContainer.firstChild);
-                        }
-                        
-                        // 새로운 다운로드 링크 추가
-                        const downloadLink = document.createElement('a');
-                        downloadLink.href = audioUrl;
-                        downloadLink.download = `recording_${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
-                        downloadLink.textContent = '녹음 파일 다운로드';
-                        downloadLink.className = 'download-link';
-                        downloadContainer.appendChild(downloadLink);
-                        
-                        // 상태 메시지 업데이트
-                        statusMessage.className = "status-message success";
-                        statusMessage.textContent = "녹음이 완료되었습니다! 녹음 파일을 다운로드하고 녹음 내용을 '텍스트 직접 입력' 탭에 입력해주세요.";
+                        // Base64 인코딩하여 Streamlit에 전달
+                        const reader = new FileReader();
+                        reader.readAsDataURL(audioBlob);
+                        reader.onloadend = () => {
+                            const base64data = reader.result.split(',')[1];
+                            
+                            // Streamlit과 커뮤니케이션
+                            window.parent.postMessage({
+                                type: "streamlit:setComponentValue",
+                                value: {
+                                    audio_data: base64data,
+                                    auto_process: true
+                                }
+                            }, "*");
+                            
+                            // 상태 메시지 업데이트
+                            statusMessage.className = "status-message success";
+                            statusMessage.textContent = "녹음이 완료되었습니다!";
+                        };
                         
                         // 오디오 트랙 중지
                         stream.getTracks().forEach(track => track.stop());
@@ -389,7 +284,217 @@ with tab3:
             }
         });
     </script>
-    """, height=300)
+    """
+
+# 결과 표시를 위한 컨테이너
+result_container = st.container()
+
+# 실시간 녹음 탭
+with tab1:
+    st.header("실시간 녹음")
+    st.markdown("아래 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요. 녹음이 완료되면 텍스트 변환 및 요약이 진행됩니다.")
+    
+    # 오디오 레코더 HTML 삽입
+    audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=250)
+    
+    # 녹음 처리 상태 표시 영역
+    recorder_status_container = st.empty()
+    
+    # JavaScript로부터 데이터 수신 처리
+    if audio_receiver and isinstance(audio_receiver, dict):
+        if "audio_data" in audio_receiver:
+            st.session_state["audio_data"] = audio_receiver["audio_data"]
+            st.session_state["auto_process"] = audio_receiver.get("auto_process", False)
+            st.session_state["recorder_status"] = "processing"
+            recorder_status_container.info("녹음이 완료되었습니다! 텍스트 변환 중...")
+            
+            # 오디오 데이터 처리
+            if process_recording_data(st.session_state["audio_data"]):
+                process_audio_to_text()
+
+# 파일 업로드 탭
+with tab2:
+    st.header("파일 업로드")
+    st.markdown("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.")
+    
+    uploaded_file = st.file_uploader("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt) 선택", 
+                                     type=["mp3", "wav", "m4a", "webm", "txt"])
+    
+    if uploaded_file is not None:
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        
+        if file_extension in ['mp3', 'wav', 'm4a', 'webm']:
+            # 오디오 파일 처리
+            st.success(f"오디오 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
+            
+            # 임시 파일로 저장
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
+                temp_file.write(uploaded_file.getbuffer())
+                temp_filename = temp_file.name
+            
+            st.session_state["audio_file"] = temp_filename
+            
+            # 텍스트 변환 버튼
+            if st.button("텍스트 변환 시작", key="convert_audio"):
+                process_audio_to_text()
+        
+        elif file_extension == 'txt':
+            # 텍스트 파일 처리
+            st.success(f"텍스트 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
+            
+            # 파일 내용 읽기
+            text_content = uploaded_file.read().decode('utf-8')
+            st.session_state["transcript_text"] = text_content
+            st.session_state["recorder_status"] = "transcribed"
+            
+            # 텍스트 미리보기
+            with st.expander("텍스트 미리보기"):
+                st.text(text_content[:1000] + ("..." if len(text_content) > 1000 else ""))
+            
+            # 텍스트 표시
+            display_transcript()
+
+# 텍스트 직접 입력 탭
+with tab3:
+    st.header("텍스트 직접 입력")
+    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
+    if st.button("텍스트 저장", key="save_text"):
+        if transcript_text:
+            st.session_state["transcript_text"] = transcript_text
+            st.session_state["recorder_status"] = "transcribed"
+            st.success("텍스트가 저장되었습니다.")
+            display_transcript()
+        else:
+            st.error("텍스트를 입력해주세요.")
+
+# 녹음 자동 처리 함수
+def process_recording_data(audio_data):
+    if not audio_data:
+        return False
+    
+    try:
+        # Base64 데이터를 파일로 저장
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            decoded_data = base64.b64decode(audio_data)
+            temp_file.write(decoded_data)
+            temp_filename = temp_file.name
+        
+        st.session_state["audio_file"] = temp_filename
+        return True
+    except Exception as e:
+        st.error(f"오디오 처리 중 오류 발생: {e}")
+        return False
+
+# 오디오를 텍스트로 변환하는 함수
+def process_audio_to_text():
+    if "audio_file" in st.session_state and st.session_state["audio_file"]:
+        # Whisper 모델 로드
+        model = load_whisper_model(model_size)
+        if not model:
+            st.error("Whisper 모델을 로드할 수 없습니다.")
+            st.session_state["recorder_status"] = "error"
+            return False
+        
+        # 오디오 파일에서 텍스트 변환
+        try:
+            with st.spinner("오디오를 텍스트로 변환 중..."):
+                audio_file = st.session_state["audio_file"]
+                
+                # 파일 존재 확인
+                if not os.path.exists(audio_file):
+                    st.error(f"파일을 찾을 수 없습니다: {audio_file}")
+                    st.session_state["recorder_status"] = "error"
+                    return False
+                
+                # 디버깅용 정보
+                file_size = os.path.getsize(audio_file)
+                st.info(f"오디오 파일 정보: 경로={audio_file}, 크기={file_size}바이트")
+                
+                # OpenAI Whisper 모델을 사용한 변환
+                try:
+                    result = model.transcribe(audio_file, language="ko")
+                    transcript = result["text"]
+                except Exception as e:
+                    st.error(f"Whisper 텍스트 변환 중 오류: {e}")
+                    import traceback
+                    st.error(f"상세 오류: {traceback.format_exc()}")
+                    return False
+                
+                if transcript:
+                    st.session_state["transcript_text"] = transcript
+                    st.session_state["recorder_status"] = "transcribed"
+                    display_transcript()
+                    return True
+                else:
+                    st.error("텍스트 변환에 실패했습니다.")
+                    st.session_state["recorder_status"] = "error"
+        except Exception as e:
+            st.error(f"텍스트 변환 처리 중 오류 발생: {e}")
+            import traceback
+            st.error(f"상세 오류: {traceback.format_exc()}")
+            st.session_state["recorder_status"] = "error"
+    
+    return False
+
+# 텍스트 변환 후 표시 함수
+def display_transcript():
+    if "transcript_text" in st.session_state and st.session_state["transcript_text"]:
+        transcript = st.session_state["transcript_text"]
+        
+        # 텍스트 표시 영역
+        transcript_container = st.container()
+        with transcript_container:
+            st.subheader("변환된 텍스트")
+            st.text_area("전체 텍스트", transcript, height=200, key="display_transcript")
+            
+            # Claude API 키가 있으면 요약 버튼 표시
+            if claude_api_key:
+                if st.button("Claude 요약 시작", key="summarize_button"):
+                    summarize_text_with_claude()
+            else:
+                st.warning("요약을 생성하려면 Claude API 키를 입력하세요.")
+        
+        return True
+    
+    return False
+
+# Claude로 요약하는 함수
+def summarize_text_with_claude():
+    if "transcript_text" not in st.session_state or not st.session_state["transcript_text"]:
+        st.error("요약할 텍스트가 없습니다.")
+        return False
+    
+    if not claude_api_key:
+        st.error("Claude API 키가 입력되지 않았습니다. 요약을 진행할 수 없습니다.")
+        return False
+    
+    transcript = st.session_state["transcript_text"]
+    
+    # 텍스트에서 브랜드명 추출
+    extracted_brand_name = extract_brand_name(transcript)
+    
+    # 사이드바에서 입력한 브랜드명이 있으면 그것을 우선 사용
+    final_brand_name = brand_name or extracted_brand_name
+    
+    # 미팅 정보 구성
+    meeting_info = {
+        "company_name": our_company_name,
+        "our_participants": our_participants,
+        "meeting_date": meeting_date.strftime("%Y-%m-%d"),
+        "brand_name": final_brand_name
+    }
+    
+    # 요약 생성
+    with st.spinner("Claude API로 요약 생성 중..."):
+        summary = summarize_with_claude(transcript, claude_api_key, meeting_info)
+    
+    if summary:
+        # 요약 결과 저장
+        st.session_state["summary_result"] = summary
+        display_summary(summary, final_brand_name)
+        return True
+    
+    return False
 
 # 요약 함수 (Claude API 사용)
 def summarize_with_claude(transcript, api_key, meeting_info):
@@ -485,11 +590,23 @@ def display_summary(summary, brand_name_value):
             key=f"download_md_{datetime.now().strftime('%H%M%S')}"
         )
 
+# 디버깅 정보 표시 영역
+with st.expander("디버깅 정보", expanded=False):
+    if "audio_file" in st.session_state:
+        st.write(f"오디오 파일 경로: {st.session_state['audio_file']}")
+        if os.path.exists(st.session_state["audio_file"]):
+            st.write(f"파일 크기: {os.path.getsize(st.session_state['audio_file'])} 바이트")
+        else:
+            st.write("파일이 존재하지 않습니다.")
+    
+    st.write(f"현재 상태: {st.session_state['recorder_status']}")
+    st.write(f"텍스트 변환 여부: {'있음' if 'transcript_text' in st.session_state and st.session_state['transcript_text'] else '없음'}")
+
 # 임시 파일 정리
 def cleanup_temp_files():
-    if "google_creds_path" in st.session_state:
+    if "audio_file" in st.session_state and st.session_state["audio_file"]:
         try:
-            os.remove(st.session_state["google_creds_path"])
+            os.remove(st.session_state["audio_file"])
         except:
             pass
 
