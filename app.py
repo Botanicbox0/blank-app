@@ -325,20 +325,21 @@ with tab2:
                 """)
                 
                 # 텍스트 입력 영역
-                transcript_from_audio = st.text_area("오디오를 직접 들으시고 텍스트를 입력해주세요:", height=300)
+                transcript_from_audio = st.text_area("오디오를 직접 들으시고 텍스트를 입력해주세요:", height=300, key="transcript_from_audio")
                 
-                if st.button("텍스트 저장 및 요약"):
+                if st.button("오디오 텍스트 저장", key="save_audio_transcript"):
                     if transcript_from_audio:
                         st.session_state["transcript_text"] = transcript_from_audio
                         st.success("텍스트가 저장되었습니다.")
                         
                         # 텍스트 표시
                         st.subheader("입력된 텍스트")
-                        st.text_area("전체 텍스트", transcript_from_audio, height=200)
+                        st.text_area("전체 텍스트", transcript_from_audio, height=200, key="display_audio_transcript")
                         
                         # Claude 요약 버튼
                         if claude_api_key:
-                            if st.button("Claude 요약 시작", key="summarize_from_audio"):
+                            summarize_audio_text = st.button("Claude 요약 시작", key="summarize_from_audio")
+                            if summarize_audio_text:
                                 with st.spinner("Claude API로 요약 생성 중..."):
                                     # 브랜드명 추출
                                     extracted_brand_name = extract_brand_name(transcript_from_audio)
@@ -372,7 +373,7 @@ with tab2:
             
             # 텍스트 미리보기
             st.subheader("파일 내용")
-            st.text_area("전체 텍스트", text_content, height=200)
+            st.text_area("전체 텍스트", text_content, height=200, key="display_txt_content")
             
             # Claude 요약 버튼
             if claude_api_key:
@@ -402,16 +403,16 @@ with tab2:
 # 텍스트 직접 입력 탭
 with tab3:
     st.header("텍스트 직접 입력")
-    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300)
+    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
     
-    if st.button("텍스트 저장 및 요약"):
+    if st.button("텍스트 저장 및 요약", key="save_direct_text"):
         if transcript_text:
             st.session_state["transcript_text"] = transcript_text
             st.success("텍스트가 저장되었습니다.")
             
             # 텍스트 표시
             st.subheader("입력된 텍스트")
-            st.text_area("저장된 텍스트", transcript_text, height=200)
+            st.text_area("저장된 텍스트", transcript_text, height=200, key="display_saved_text")
             
             # Claude 요약 버튼
             if claude_api_key:
@@ -521,12 +522,14 @@ def display_summary(summary, brand_name_value):
             label="요약본 다운로드 (.txt)",
             data=summary,
             file_name=f"브랜드미팅요약_{meeting_date.strftime('%Y%m%d')}_{brand_name_value}.txt",
-            mime="text/plain"
+            mime="text/plain",
+            key=f"download_txt_{datetime.now().strftime('%H%M%S')}"
         )
     with col2:
         st.download_button(
             label="요약본 다운로드 (.md)",
             data=summary,
             file_name=f"브랜드미팅요약_{meeting_date.strftime('%Y%m%d')}_{brand_name_value}.md",
-            mime="text/markdown"
+            mime="text/markdown",
+            key=f"download_md_{datetime.now().strftime('%H%M%S')}"
         )
