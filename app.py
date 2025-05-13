@@ -387,7 +387,7 @@ def process_recording_data(audio_data):
 
 # 오디오를 텍스트로 변환하는 함수
 def process_audio_to_text():
-    if "audio_file" in st.session_state and st.session_state["audio_file"]:
+    if "audio_file" in st.session_state and st.session_state["audio_file"] and os.path.exists(st.session_state["audio_file"]):
         # Whisper 모델 로드
         model = load_whisper_model(model_size)
         if not model:
@@ -433,6 +433,9 @@ def process_audio_to_text():
             import traceback
             st.error(f"상세 오류: {traceback.format_exc()}")
             st.session_state["recorder_status"] = "error"
+    else:
+        st.error("처리할 오디오 파일이 없거나 파일이 존재하지 않습니다.")
+        st.session_state["recorder_status"] = "error"
     
     return False
 
@@ -592,12 +595,14 @@ def display_summary(summary, brand_name_value):
 
 # 디버깅 정보 표시 영역
 with st.expander("디버깅 정보", expanded=False):
-    if "audio_file" in st.session_state:
+    if "audio_file" in st.session_state and st.session_state["audio_file"] is not None:
         st.write(f"오디오 파일 경로: {st.session_state['audio_file']}")
         if os.path.exists(st.session_state["audio_file"]):
             st.write(f"파일 크기: {os.path.getsize(st.session_state['audio_file'])} 바이트")
         else:
             st.write("파일이 존재하지 않습니다.")
+    else:
+        st.write("오디오 파일이 아직 생성되지 않았습니다.")
     
     st.write(f"현재 상태: {st.session_state['recorder_status']}")
     st.write(f"텍스트 변환 여부: {'있음' if 'transcript_text' in st.session_state and st.session_state['transcript_text'] else '없음'}")
