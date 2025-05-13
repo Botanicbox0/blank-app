@@ -12,51 +12,6 @@ from io import BytesIO
 import base64
 import subprocess
 
-# 페이지 설정
-st.set_page_config(page_title="브랜드 세일즈 미팅록 자동화", page_icon="🎙️", layout="wide")
-
-# 타이틀 및 설명
-st.title("🎙️ 브랜드 세일즈 미팅록 자동화")
-st.markdown("""
-이 앱은 브랜드 세일즈 미팅을 실시간으로 녹음하거나 기존 녹음을 업로드하여 텍스트로 변환하고 요약합니다.
-1. 실시간 녹음을 시작하거나 기존 오디오/텍스트 파일을 업로드하세요.
-2. 녹음이 끝나면 자동으로 텍스트로 변환되고 요약을 생성합니다.
-3. 구조화된 브랜드 미팅 요약을 복사하거나 다운로드할 수 있습니다.
-""")
-
-# 세션 상태 초기화
-if "audio_data" not in st.session_state:
-    st.session_state["audio_data"] = None
-if "auto_process" not in st.session_state:
-    st.session_state["auto_process"] = False
-if "audio_file" not in st.session_state:
-    st.session_state["audio_file"] = None
-if "transcript_text" not in st.session_state:
-    st.session_state["transcript_text"] = None
-if "summary_result" not in st.session_state:
-    st.session_state["summary_result"] = None
-if "processed_data" not in st.session_state:
-    st.session_state["processed_data"] = None
-if "recorder_status" not in st.session_state:
-    st.session_state["recorder_status"] = "idle"  # 상태: idle, recording, processing, transcribed
-
-# 탭 생성
-tab1, tab2, tab3 = st.tabs(["실시간 녹음", "파일 업로드", "텍스트 직접 입력"])
-
-# Claude API 키 입력
-with st.sidebar:
-    st.header("설정")
-    claude_api_key = st.text_input("Claude API 키", type="password")
-    st.markdown("---")
-    st.subheader("Whisper 모델 (음성 변환용)")
-    model_size = st.selectbox("모델 크기", ["tiny", "base", "small", "medium", "large"], index=1)
-    st.markdown("---")
-    st.subheader("브랜드 미팅 정보")
-    our_company_name = st.text_input("자사명", value="브랜더진")
-    our_participants = st.text_input("자사 참석자 (쉼표로 구분)")
-    meeting_date = st.date_input("미팅 날짜", datetime.now())
-    brand_name = st.text_input("브랜드명 (자동 추출되지 않을 경우 사용)")
-
 # Whisper 모델 로드
 @st.cache_resource
 def load_whisper_model(model_size):
@@ -312,113 +267,6 @@ def get_audio_recorder_html():
     </script>
     """
 
-# 결과 표시를 위한 컨테이너
-result_container = st.container()
-
-# 실시간 녹음 탭
-with tab1:
-    st.header("실시간 녹음")
-    st.markdown("""
-    1. 아래 '녹음 시작' 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요.
-    2. 녹음이 완료되면 '녹음 파일 다운로드' 버튼이 나타납니다.
-    3. 다운로드한 파일을 '파일 업로드' 탭에서 업로드하여 텍스트로 변환하세요.
-    """)
-    
-    # 오디오 레코더 HTML 삽입 - 높이 증가
-    audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=300)
-    
-    # 녹음 처리 상태 표시 영역
-    recorder_status_container = st.empty()
-    
-    # JavaScript로부터 데이터 수신 처리
-    if audio_receiver and isinstance(audio_receiver, dict):
-        if "audio_data" in audio_receiver:
-            st.session_state["audio_data"] = audio_receiver["audio_data"]
-            st.session_state["auto_process"] = audio_receiver.get("auto_process", False)
-            st.session_state["recorder_status"] = "recorded"  # 상태를 "처리 중"이 아닌 "녹음 완료"로 변경
-            recorder_status_container.success("녹음이 완료되었습니다! 다운로드 버튼을 클릭하여 파일을 저장한 후, '파일 업로드' 탭에서 업로드해 주세요.")
-
-# 파일 업로드 탭
-with tab2:
-    st.header("파일 업로드")
-    st.markdown("""
-    1. 오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.
-    2. '텍스트 변환 시작' 버튼을 클릭하여 오디오를 텍스트로 변환하세요.
-    3. 변환된 텍스트를 확인하고 'Claude 요약 시작' 버튼을 클릭하세요.
-    """)
-    
-    uploaded_file = st.file_uploader("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt) 선택", 
-                                     type=["mp3", "wav", "m4a", "webm", "txt"])
-    
-    if uploaded_file is not None:
-        file_extension = uploaded_file.name.split('.')[-1].lower()
-        
-        if file_extension in ['mp3', 'wav', 'm4a', 'webm']:
-            # 오디오 파일 처리
-            st.success(f"오디오 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
-            
-            # 임시 파일로 저장
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-                temp_file.write(uploaded_file.getbuffer())
-                temp_filename = temp_file.name
-            
-            st.session_state["audio_file"] = temp_filename
-            
-            # 파일 정보 표시
-            file_size = os.path.getsize(temp_filename)
-            st.info(f"업로드된 파일 크기: {file_size} 바이트")
-            
-            # 텍스트 변환 버튼
-            if st.button("텍스트 변환 시작", key="convert_audio"):
-                process_audio_to_text()
-        
-        elif file_extension == 'txt':
-            # 텍스트 파일 처리
-            st.success(f"텍스트 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
-            
-            # 파일 내용 읽기
-            text_content = uploaded_file.read().decode('utf-8')
-            st.session_state["transcript_text"] = text_content
-            st.session_state["recorder_status"] = "transcribed"
-            
-            # 텍스트 미리보기
-            with st.expander("텍스트 미리보기"):
-                st.text(text_content[:1000] + ("..." if len(text_content) > 1000 else ""))
-            
-            # 텍스트 표시
-            display_transcript()
-
-# 텍스트 직접 입력 탭
-with tab3:
-    st.header("텍스트 직접 입력")
-    transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
-    if st.button("텍스트 저장", key="save_text"):
-        if transcript_text:
-            st.session_state["transcript_text"] = transcript_text
-            st.session_state["recorder_status"] = "transcribed"
-            st.success("텍스트가 저장되었습니다.")
-            display_transcript()
-        else:
-            st.error("텍스트를 입력해주세요.")
-
-# 녹음 자동 처리 함수
-def process_recording_data(audio_data):
-    if not audio_data:
-        return False
-    
-    try:
-        # Base64 데이터를 파일로 저장
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            decoded_data = base64.b64decode(audio_data)
-            temp_file.write(decoded_data)
-            temp_filename = temp_file.name
-        
-        st.session_state["audio_file"] = temp_filename
-        return True
-    except Exception as e:
-        st.error(f"오디오 처리 중 오류 발생: {e}")
-        return False
-
 # 오디오를 텍스트로 변환하는 함수
 def process_audio_to_text():
     if "audio_file" in st.session_state and st.session_state["audio_file"] and os.path.exists(st.session_state["audio_file"]):
@@ -494,6 +342,24 @@ def display_transcript():
         return True
     
     return False
+
+# 녹음 자동 처리 함수
+def process_recording_data(audio_data):
+    if not audio_data:
+        return False
+    
+    try:
+        # Base64 데이터를 파일로 저장
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            decoded_data = base64.b64decode(audio_data)
+            temp_file.write(decoded_data)
+            temp_filename = temp_file.name
+        
+        st.session_state["audio_file"] = temp_filename
+        return True
+    except Exception as e:
+        st.error(f"오디오 처리 중 오류 발생: {e}")
+        return False
 
 # Claude로 요약하는 함수
 def summarize_text_with_claude():
@@ -627,20 +493,6 @@ def display_summary(summary, brand_name_value):
             key=f"download_md_{datetime.now().strftime('%H%M%S')}"
         )
 
-# 디버깅 정보 표시 영역
-with st.expander("디버깅 정보", expanded=False):
-    if "audio_file" in st.session_state and st.session_state["audio_file"] is not None:
-        st.write(f"오디오 파일 경로: {st.session_state['audio_file']}")
-        if os.path.exists(st.session_state["audio_file"]):
-            st.write(f"파일 크기: {os.path.getsize(st.session_state['audio_file'])} 바이트")
-        else:
-            st.write("파일이 존재하지 않습니다.")
-    else:
-        st.write("오디오 파일이 아직 생성되지 않았습니다.")
-    
-    st.write(f"현재 상태: {st.session_state['recorder_status']}")
-    st.write(f"텍스트 변환 여부: {'있음' if 'transcript_text' in st.session_state and st.session_state['transcript_text'] else '없음'}")
-
 # 임시 파일 정리
 def cleanup_temp_files():
     if "audio_file" in st.session_state and st.session_state["audio_file"]:
@@ -652,3 +504,157 @@ def cleanup_temp_files():
 # 앱 종료 시 임시 파일 정리
 import atexit
 atexit.register(cleanup_temp_files)
+
+# 메인 앱 시작
+def main():
+    # 페이지 설정
+    st.set_page_config(page_title="브랜드 세일즈 미팅록 자동화", page_icon="🎙️", layout="wide")
+
+    # 타이틀 및 설명
+    st.title("🎙️ 브랜드 세일즈 미팅록 자동화")
+    st.markdown("""
+    이 앱은 브랜드 세일즈 미팅을 실시간으로 녹음하거나 기존 녹음을 업로드하여 텍스트로 변환하고 요약합니다.
+    1. 실시간 녹음을 시작하거나 기존 오디오/텍스트 파일을 업로드하세요.
+    2. 녹음이 끝나면 자동으로 텍스트로 변환되고 요약을 생성합니다.
+    3. 구조화된 브랜드 미팅 요약을 복사하거나 다운로드할 수 있습니다.
+    """)
+
+    # 세션 상태 초기화
+    if "audio_data" not in st.session_state:
+        st.session_state["audio_data"] = None
+    if "auto_process" not in st.session_state:
+        st.session_state["auto_process"] = False
+    if "audio_file" not in st.session_state:
+        st.session_state["audio_file"] = None
+    if "transcript_text" not in st.session_state:
+        st.session_state["transcript_text"] = None
+    if "summary_result" not in st.session_state:
+        st.session_state["summary_result"] = None
+    if "processed_data" not in st.session_state:
+        st.session_state["processed_data"] = None
+    if "recorder_status" not in st.session_state:
+        st.session_state["recorder_status"] = "idle"  # 상태: idle, recording, processing, transcribed
+
+    # 탭 생성
+    tab1, tab2, tab3 = st.tabs(["실시간 녹음", "파일 업로드", "텍스트 직접 입력"])
+
+    # Claude API 키 입력
+    with st.sidebar:
+        st.header("설정")
+        claude_api_key = st.text_input("Claude API 키", type="password")
+        st.markdown("---")
+        st.subheader("Whisper 모델 (음성 변환용)")
+        model_size = st.selectbox("모델 크기", ["tiny", "base", "small", "medium", "large"], index=1)
+        st.markdown("---")
+        st.subheader("브랜드 미팅 정보")
+        our_company_name = st.text_input("자사명", value="브랜더진")
+        our_participants = st.text_input("자사 참석자 (쉼표로 구분)")
+        meeting_date = st.date_input("미팅 날짜", datetime.now())
+        brand_name = st.text_input("브랜드명 (자동 추출되지 않을 경우 사용)")
+
+    # 결과 표시를 위한 컨테이너
+    result_container = st.container()
+
+    # 실시간 녹음 탭
+    with tab1:
+        st.header("실시간 녹음")
+        st.markdown("""
+        1. 아래 '녹음 시작' 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요.
+        2. 녹음이 완료되면 '녹음 파일 다운로드' 버튼이 나타납니다.
+        3. 다운로드한 파일을 '파일 업로드' 탭에서 업로드하여 텍스트로 변환하세요.
+        """)
+        
+        # 오디오 레코더 HTML 삽입 - 높이 증가
+        audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=300)
+        
+        # 녹음 처리 상태 표시 영역
+        recorder_status_container = st.empty()
+        
+        # JavaScript로부터 데이터 수신 처리
+        if audio_receiver and isinstance(audio_receiver, dict):
+            if "audio_data" in audio_receiver:
+                st.session_state["audio_data"] = audio_receiver["audio_data"]
+                st.session_state["auto_process"] = audio_receiver.get("auto_process", False)
+                st.session_state["recorder_status"] = "recorded"  # 상태를 "처리 중"이 아닌 "녹음 완료"로 변경
+                recorder_status_container.success("녹음이 완료되었습니다! 다운로드 버튼을 클릭하여 파일을 저장한 후, '파일 업로드' 탭에서 업로드해 주세요.")
+
+    # 파일 업로드 탭
+    with tab2:
+        st.header("파일 업로드")
+        st.markdown("""
+        1. 오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.
+        2. '텍스트 변환 시작' 버튼을 클릭하여 오디오를 텍스트로 변환하세요.
+        3. 변환된 텍스트를 확인하고 'Claude 요약 시작' 버튼을 클릭하세요.
+        """)
+        
+        uploaded_file = st.file_uploader("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt) 선택", 
+                                        type=["mp3", "wav", "m4a", "webm", "txt"])
+        
+        if uploaded_file is not None:
+            file_extension = uploaded_file.name.split('.')[-1].lower()
+            
+            if file_extension in ['mp3', 'wav', 'm4a', 'webm']:
+                # 오디오 파일 처리
+                st.success(f"오디오 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
+                
+                # 임시 파일로 저장
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
+                    temp_file.write(uploaded_file.getbuffer())
+                    temp_filename = temp_file.name
+                
+                st.session_state["audio_file"] = temp_filename
+                
+                # 파일 정보 표시
+                file_size = os.path.getsize(temp_filename)
+                st.info(f"업로드된 파일 크기: {file_size} 바이트")
+                
+                # 텍스트 변환 버튼
+                if st.button("텍스트 변환 시작", key="convert_audio"):
+                    process_audio_to_text()
+            
+            elif file_extension == 'txt':
+                # 텍스트 파일 처리
+                st.success(f"텍스트 파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
+                
+                # 파일 내용 읽기
+                text_content = uploaded_file.read().decode('utf-8')
+                st.session_state["transcript_text"] = text_content
+                st.session_state["recorder_status"] = "transcribed"
+                
+                # 텍스트 미리보기
+                with st.expander("텍스트 미리보기"):
+                    st.text(text_content[:1000] + ("..." if len(text_content) > 1000 else ""))
+                
+                # 텍스트 표시
+                display_transcript()
+
+    # 텍스트 직접 입력 탭
+    with tab3:
+        st.header("텍스트 직접 입력")
+        transcript_text = st.text_area("미팅 내용을 여기에 붙여넣기하세요", height=300, key="direct_input_text")
+        if st.button("텍스트 저장", key="save_text"):
+            if transcript_text:
+                st.session_state["transcript_text"] = transcript_text
+                st.session_state["recorder_status"] = "transcribed"
+                st.success("텍스트가 저장되었습니다.")
+                display_transcript()
+            else:
+                st.error("텍스트를 입력해주세요.")
+
+    # 디버깅 정보 표시 영역
+    with st.expander("디버깅 정보", expanded=False):
+        if "audio_file" in st.session_state and st.session_state["audio_file"] is not None:
+            st.write(f"오디오 파일 경로: {st.session_state['audio_file']}")
+            if os.path.exists(st.session_state["audio_file"]):
+                st.write(f"파일 크기: {os.path.getsize(st.session_state['audio_file'])} 바이트")
+            else:
+                st.write("파일이 존재하지 않습니다.")
+        else:
+            st.write("오디오 파일이 아직 생성되지 않았습니다.")
+        
+        st.write(f"현재 상태: {st.session_state['recorder_status']}")
+        st.write(f"텍스트 변환 여부: {'있음' if 'transcript_text' in st.session_state and st.session_state['transcript_text'] else '없음'}")
+
+# 앱 실행
+if __name__ == "__main__":
+    main()
