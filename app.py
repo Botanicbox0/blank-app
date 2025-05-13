@@ -182,11 +182,22 @@ def get_audio_recorder_html():
         background-color: #ddffdd;
         border-left: 6px solid #4CAF50;
     }
+    .download-link {
+        display: inline-block;
+        margin: 10px 0;
+        padding: 10px 15px;
+        background-color: #4CAF50;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
     </style>
     <div id="audio-recorder">
         <button id="record-button" class="button">녹음 시작</button>
         <div id="time-display" class="time-display">00:00:00</div>
         <audio id="audio-playback" controls style="display:none;"></audio>
+        <div id="download-container"></div>
         <div id="status-message" class="status-message"></div>
     </div>
 
@@ -195,6 +206,7 @@ def get_audio_recorder_html():
         const timeDisplay = document.getElementById('time-display');
         const audioPlayback = document.getElementById('audio-playback');
         const statusMessage = document.getElementById('status-message');
+        const downloadContainer = document.getElementById('download-container');
         
         let mediaRecorder;
         let audioChunks = [];
@@ -229,8 +241,8 @@ def get_audio_recorder_html():
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     
                     // 가능한 오디오 형식 확인
-                    const mimeType = 'audio/wav';
-                    mediaRecorder = new MediaRecorder(stream);
+                    const mimeType = 'audio/webm';
+                    mediaRecorder = new MediaRecorder(stream, { mimeType });
                     
                     mediaRecorder.ondataavailable = (event) => {
                         audioChunks.push(event.data);
@@ -238,10 +250,24 @@ def get_audio_recorder_html():
                     
                     mediaRecorder.onstop = () => {
                         // 녹음된 오디오 처리
-                        audioBlob = new Blob(audioChunks);
+                        audioBlob = new Blob(audioChunks, { type: mimeType });
                         const audioUrl = URL.createObjectURL(audioBlob);
                         audioPlayback.src = audioUrl;
                         audioPlayback.style.display = 'block';
+                        
+                        // 다운로드 링크 생성
+                        // 이전 다운로드 링크 제거
+                        while (downloadContainer.firstChild) {
+                            downloadContainer.removeChild(downloadContainer.firstChild);
+                        }
+                        
+                        // 다운로드 링크 생성
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = audioUrl;
+                        downloadLink.download = 'recording_' + new Date().toISOString().replace(/[:.]/g, '-') + '.webm';
+                        downloadLink.className = 'download-link';
+                        downloadLink.textContent = '녹음 파일 다운로드';
+                        downloadContainer.appendChild(downloadLink);
                         
                         // Base64 인코딩하여 Streamlit에 전달
                         const reader = new FileReader();
@@ -260,7 +286,7 @@ def get_audio_recorder_html():
                             
                             // 상태 메시지 업데이트
                             statusMessage.className = "status-message success";
-                            statusMessage.textContent = "녹음이 완료되었습니다!";
+                            statusMessage.textContent = "녹음이 완료되었습니다! 파일을 다운로드한 후 '파일 업로드' 탭에서 업로드하세요.";
                         };
                         
                         // 오디오 트랙 중지
@@ -292,10 +318,14 @@ result_container = st.container()
 # 실시간 녹음 탭
 with tab1:
     st.header("실시간 녹음")
-    st.markdown("아래 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요. 녹음이 완료되면 텍스트 변환 및 요약이 진행됩니다.")
+    st.markdown("""
+    1. 아래 '녹음 시작' 버튼을 클릭하여 브랜드 미팅을 실시간으로 녹음하세요.
+    2. 녹음이 완료되면 '녹음 파일 다운로드' 버튼이 나타납니다.
+    3. 다운로드한 파일을 '파일 업로드' 탭에서 업로드하여 텍스트로 변환하세요.
+    """)
     
-    # 오디오 레코더 HTML 삽입
-    audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=250)
+    # 오디오 레코더 HTML 삽입 - 높이 증가
+    audio_receiver = st.components.v1.html(get_audio_recorder_html(), height=300)
     
     # 녹음 처리 상태 표시 영역
     recorder_status_container = st.empty()
@@ -305,17 +335,17 @@ with tab1:
         if "audio_data" in audio_receiver:
             st.session_state["audio_data"] = audio_receiver["audio_data"]
             st.session_state["auto_process"] = audio_receiver.get("auto_process", False)
-            st.session_state["recorder_status"] = "processing"
-            recorder_status_container.info("녹음이 완료되었습니다! 텍스트 변환 중...")
-            
-            # 오디오 데이터 처리
-            if process_recording_data(st.session_state["audio_data"]):
-                process_audio_to_text()
+            st.session_state["recorder_status"] = "recorded"  # 상태를 "처리 중"이 아닌 "녹음 완료"로 변경
+            recorder_status_container.success("녹음이 완료되었습니다! 다운로드 버튼을 클릭하여 파일을 저장한 후, '파일 업로드' 탭에서 업로드해 주세요.")
 
 # 파일 업로드 탭
 with tab2:
     st.header("파일 업로드")
-    st.markdown("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.")
+    st.markdown("""
+    1. 오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt)을 업로드하세요.
+    2. '텍스트 변환 시작' 버튼을 클릭하여 오디오를 텍스트로 변환하세요.
+    3. 변환된 텍스트를 확인하고 'Claude 요약 시작' 버튼을 클릭하세요.
+    """)
     
     uploaded_file = st.file_uploader("오디오 파일(.mp3, .wav, .m4a, .webm) 또는 텍스트 파일(.txt) 선택", 
                                      type=["mp3", "wav", "m4a", "webm", "txt"])
@@ -333,6 +363,10 @@ with tab2:
                 temp_filename = temp_file.name
             
             st.session_state["audio_file"] = temp_filename
+            
+            # 파일 정보 표시
+            file_size = os.path.getsize(temp_filename)
+            st.info(f"업로드된 파일 크기: {file_size} 바이트")
             
             # 텍스트 변환 버튼
             if st.button("텍스트 변환 시작", key="convert_audio"):
